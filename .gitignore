@@ -1,0 +1,18 @@
+# python generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# personal data: never commit
+keepassclient.db
+
+# stale root-owned leftovers (unreadable by the user account)
+kpconnect
+*.swp
+
+# venv
+.venv
+.uv-cache/
