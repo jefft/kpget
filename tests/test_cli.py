@@ -85,6 +85,31 @@ class CliTest(unittest.TestCase):
         self.assertIn("https://example.com", text)
         self.assertIn("WorkDB", text)
 
+    def test_get_falls_back_when_proxy_socket_unreachable(self):
+        # Rows exist (registered elsewhere), but no local KeepassXC proxy is
+        # running at all here -- e.g. a headless server. Must still fall
+        # back to a manual stdin prompt, not hard-fail.
+        store.add(store.connect(), "cli", "v2:abc", "aabb", "WorkDB")
+
+        class _FakeProbe:
+            def connect(self):
+                raise OSError("No such file or directory")
+
+        err = io.StringIO()
+        out = io.StringIO()
+        with mock.patch("kpget.cli.protocol.Connection", return_value=_FakeProbe()), \
+                mock.patch("sys.stdin", io.StringIO("piped-secret\n")):
+            with redirect_stdout(out), redirect_stderr(err):
+                self.assertEqual(cli.main(["example.com"]), 0)
+        self.assertEqual(out.getvalue(), "piped-secret\n")
+        text = err.getvalue()
+        self.assertIn("cannot reach the KeepassXC browser socket", text)
+        self.assertIn("manual fallback", text)
+        self.assertIn("https://example.com", text)
+        # No active database is known (never connected), so no specific
+        # label is claimed.
+        self.assertNotIn("WorkDB", text)
+
     def test_get_without_yubikey_prompts_hidden_on_tty(self):
         store.add(store.connect(), "cli", "v2:abc", "aabb", "WorkDB")
 

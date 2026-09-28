@@ -145,19 +145,26 @@ def _extract_name(response) -> str:
     raise KeyError("unexpected groups shape: " + (shape[:200] + "..." if len(shape) > 200 else shape))
 
 
-def _manual_fetch(url: str, rows, active_hash: str) -> int:
-    """No Yubikey: nothing can be unsealed. Point the user at the entry in
-    KeepassXC, then read the password on stdin and re-emit it on stdout, so
-    `kpget URL` behaves identically for callers with or without the key."""
-    label = next(
-        (r.database_name for r in rows if r.database_hash == active_hash and r.database_name),
-        active_hash[:12],
-    )
-    print("kpget: no Yubikey detected -- manual fallback:", file=sys.stderr)
-    print(f"  1. Open and unlock the '{label}' database in KeepassXC.", file=sys.stderr)
+def _manual_fetch(url: str, reason: str, rows=(), active_hash: str | None = None) -> int:
+    """Nothing can be unsealed locally, for whatever `reason` (no Yubikey;
+    no local KeepassXC browser-integration socket to talk to at all). Point
+    the user at the entry in KeepassXC, then read the password on stdin and
+    re-emit it on stdout, so `kpget URL` behaves identically for callers
+    with or without a working local KeepassXC connection.
+
+    `active_hash` is None when we couldn't even reach a local KeepassXC to
+    ask which database is active (so we can't name one specifically)."""
+    print(f"kpget: {reason} -- manual fallback:", file=sys.stderr)
+    if active_hash is not None:
+        label = next(
+            (r.database_name for r in rows if r.database_hash == active_hash and r.database_name),
+            active_hash[:12],
+        )
+        print(f"  1. Open and unlock the '{label}' database in KeepassXC.", file=sys.stderr)
+    else:
+        print("  1. Open and unlock the relevant database in KeepassXC.", file=sys.stderr)
     print(f"  2. Find the entry whose URL matches: {url}", file=sys.stderr)
     print("  3. Copy its password, paste it at the prompt, press Enter.", file=sys.stderr)
-    print("  (kpget cannot unseal its associations while the key is absent.)", file=sys.stderr)
     try:
         if sys.stdin.isatty():
             password = getpass.getpass(f"Enter password for {url}: ")
@@ -222,8 +229,11 @@ def cmd_get(args) -> int:
         probe.connect()
         active_hash = probe.get_databasehash()
     except OSError as exc:
-        return _fail(
-            f"cannot reach the KeepassXC browser socket (is KeepassXC running with browser integration?): {exc}"
+        return _manual_fetch(
+            url,
+            "cannot reach the KeepassXC browser socket (is KeepassXC running with browser"
+            f" integration?): {exc}",
+            rows,
         )
     active_name = next(
         (row.database_name for row in rows if row.database_hash == active_hash), None
@@ -232,7 +242,7 @@ def cmd_get(args) -> int:
     try:
         key = crypto.derive_key(yubikey.calculate())
     except yubikey.YubikeyMissingError:
-        return _manual_fetch(url, rows, active_hash)
+        return _manual_fetch(url, "no Yubikey detected", rows, active_hash)
     for row in rows:
         if row.database_hash and row.database_hash != active_hash:
             print(
