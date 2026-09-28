@@ -16,3 +16,7 @@ kpconnect
 # venv
 .venv
 .uv-cache/
+
+# nix
+/result
+/result-*
