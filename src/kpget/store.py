@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import collections
 import os
+import shutil
 import sqlite3
 import stat
 import sys
@@ -28,12 +29,35 @@ def db_path() -> Path:
     override = os.environ.get("KPGET_DB")
     if override:
         return Path(override)
-    # Editable install: <repo>/src/kpget/store.py -> <repo>/keepassclient.db
+    # Default to the user's XDG data dir. The old editable-install default
+    # (Path(__file__).parents[2]) is broken for any non-editable install --
+    # e.g. a Nix-installed copy, where it resolves into the read-only store.
+    xdg_data = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+    return Path(xdg_data) / "kpget" / DB_NAME
+
+
+def _legacy_db_path() -> Path:
+    # Pre-XDG location; only ever correct for an editable install
+    # (<repo>/src/kpget/store.py -> <repo>/keepassclient.db).
     return Path(__file__).resolve().parents[2] / DB_NAME
+
+
+def _migrate_legacy_db(path: Path) -> None:
+    """Copy a legacy editable-install DB into the new XDG location, once."""
+    legacy = _legacy_db_path()
+    if legacy != path and legacy.is_file() and not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(legacy, path)
+        print(f"kpget: migrated {legacy} -> {path}", file=sys.stderr)
 
 
 def connect() -> sqlite3.Connection:
     path = db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Only migrate when using the default location. An explicit KPGET_DB means
+    # "use exactly this file", not "migrate the legacy DB for me".
+    if "KPGET_DB" not in os.environ:
+        _migrate_legacy_db(path)
     first = not path.exists()
     conn = sqlite3.connect(path, timeout=5)
     conn.execute("PRAGMA busy_timeout = 5000")
