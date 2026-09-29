@@ -88,8 +88,10 @@ code as your user while the Yubikey is physically present (they could invoke
 `ykman` themselves); a compromised KeepassXC process; or an adversary with
 both your disk image and physical possession of the Yubikey.
 
-**No Yubikey present:** `kpget URL` prints the entry location and prompts for
-the password on stdin (hidden prompt on a TTY, raw line on piped stdin), then
+**Manual fallback:** whenever KeepassXC can't supply the password — no
+Yubikey, no registered connection, KeepassXC unreachable, no matching entry —
+`kpget URL` prints the reason and the entry location, then prompts for the
+password on stdin (hidden prompt on a TTY, raw line on piped stdin), then
 re-emits it on stdout — so callers work identically either way. The SecretSpec
 endpoint instead reports `interaction_required`.
 

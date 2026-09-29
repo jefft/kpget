@@ -216,33 +216,62 @@ def cmd_register(args) -> int:
     return 0
 
 
+_SOCKET_HINT = "cannot reach the KeepassXC browser socket (is KeepassXC running with browser integration?)"
+
+
+class _Unavailable(Exception):
+    """KeepassXC could not supply the password; carries what the manual
+    fallback needs to point the user at the right database."""
+
+    def __init__(self, reason: str, rows=(), active_hash: str | None = None):
+        super().__init__(reason)
+        self.reason = reason
+        self.rows = rows
+        self.active_hash = active_hash
+
+
 def cmd_get(args) -> int:
     url = args.url
     if "://" not in url:
         url = "https://" + url
+    # Every way KeepassXC can fail to supply the password -- nothing
+    # registered, no socket, no Yubikey, no matching entry, a failed touch --
+    # is reported and then degrades to the stdin prompt, so `kpget URL`
+    # always yields a password to a caller that can supply one by hand.
+    try:
+        password = _lookup(url)
+    except _Unavailable as exc:
+        return _manual_fetch(url, exc.reason, exc.rows, exc.active_hash)
+    except _EXPECTED_ERRORS as exc:
+        return _manual_fetch(url, str(exc) or type(exc).__name__)
+    print(password)
+    return 0
+
+
+def _lookup(url: str) -> str:
+    """The password for `url` from KeepassXC, or raise _Unavailable."""
     conn = store.connect()
     rows = store.rows(conn)
     if not rows:
-        return _fail("no KeepassXC connections exist; run 'kpget register' first")
+        # Checked before any socket or Yubikey interaction: a touch here
+        # could never unseal anything.
+        raise _Unavailable("no KeepassXC connections exist; run 'kpget register' first")
     probe = protocol.Connection()
     try:
         probe.connect()
         active_hash = probe.get_databasehash()
     except OSError as exc:
-        return _manual_fetch(
-            url,
-            "cannot reach the KeepassXC browser socket (is KeepassXC running with browser"
-            f" integration?): {exc}",
-            rows,
-        )
+        raise _Unavailable(f"{_SOCKET_HINT}: {exc}", rows) from exc
     active_name = next(
         (row.database_name for row in rows if row.database_hash == active_hash), None
     )
     print(f"kpget: active database: {active_name or active_hash[:12]}", file=sys.stderr)
     try:
         key = crypto.derive_key(yubikey.calculate())
-    except yubikey.YubikeyMissingError:
-        return _manual_fetch(url, "no Yubikey detected", rows, active_hash)
+    except yubikey.YubikeyMissingError as exc:
+        raise _Unavailable("no Yubikey detected", rows, active_hash) from exc
+    except yubikey.YubikeyError as exc:
+        raise _Unavailable(f"Yubikey challenge failed: {exc}", rows, active_hash) from exc
     for row in rows:
         if row.database_hash and row.database_hash != active_hash:
             print(
@@ -260,9 +289,7 @@ def cmd_get(args) -> int:
         try:
             session.connect()
         except OSError as exc:
-            return _fail(
-                f"cannot reach the KeepassXC browser socket (is KeepassXC running with browser integration?): {exc}"
-            )
+            raise _Unavailable(f"{_SOCKET_HINT}: {exc}", rows, active_hash) from exc
         session.load_associate(row.name, base64.b64decode(public_key_b64))
         try:
             session.test_associate()
@@ -277,10 +304,9 @@ def cmd_get(args) -> int:
             print(f"kpget: row {row.rowid} ('{row.name}'): query failed; skipping", file=sys.stderr)
             continue
         if entries:
-            print(entries[0].get("password", ""))
-            return 0
+            return entries[0].get("password", "")
         print(f"kpget: row {row.rowid} ('{row.name}'): no logins for {url}", file=sys.stderr)
-    return _fail(f"no password entry for {url}")
+    raise _Unavailable(f"no password entry for {url}", rows, active_hash)
 
 
 def cmd_list(args) -> int:

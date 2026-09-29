@@ -1,3 +1,4 @@
+import base64
 import io
 import os
 import tempfile
@@ -8,7 +9,7 @@ from unittest import mock
 from keepassxc_proxy_client import protocol
 from nacl.public import PublicKey
 
-from kpget import cli, store, yubikey
+from kpget import cli, crypto, store, yubikey
 
 
 class NormalizeArgvTest(unittest.TestCase):
@@ -57,9 +58,56 @@ class CliTest(unittest.TestCase):
         self.assertIn("cli", out.getvalue())
         self.assertIn("created", out.getvalue())
 
-    def test_get_without_connections_fails_before_yubikey(self):
-        # Empty database: must fail without any Yubikey interaction.
-        self.assertEqual(cli.main(["example.com"]), 1)
+    def test_get_without_connections_falls_back_without_touching_anything(self):
+        # Empty database: report it, then prompt -- no socket connection and
+        # no Yubikey interaction, since nothing could be unsealed anyway.
+        err = io.StringIO()
+        out = io.StringIO()
+        with mock.patch("kpget.cli.protocol.Connection") as connection, \
+                mock.patch("kpget.cli.yubikey.calculate") as calculate, \
+                mock.patch("sys.stdin", io.StringIO("piped-secret\n")):
+            with redirect_stdout(out), redirect_stderr(err):
+                self.assertEqual(cli.main(["example.com"]), 0)
+        connection.assert_not_called()
+        calculate.assert_not_called()
+        self.assertEqual(out.getvalue(), "piped-secret\n")
+        text = err.getvalue()
+        self.assertIn("no KeepassXC connections exist", text)
+        self.assertIn("manual fallback", text)
+
+    def test_get_falls_back_when_no_entry_matches(self):
+        key = crypto.derive_key(b"\x01" * 20)
+        sealed = crypto.seal(key, base64.b64encode(b"\x02" * 32))
+        store.add(store.connect(), "cli", sealed, "aabb", "WorkDB")
+
+        class _FakeSession:
+            def connect(self):
+                pass
+
+            def get_databasehash(self):
+                return "aabb"
+
+            def load_associate(self, name, public_key):
+                pass
+
+            def test_associate(self):
+                pass
+
+            def get_logins(self, url):
+                return []
+
+        err = io.StringIO()
+        out = io.StringIO()
+        with mock.patch("kpget.cli.protocol.Connection", side_effect=_FakeSession), \
+                mock.patch("kpget.cli.yubikey.calculate", return_value=b"\x01" * 20), \
+                mock.patch("sys.stdin", io.StringIO("piped-secret\n")):
+            with redirect_stdout(out), redirect_stderr(err):
+                self.assertEqual(cli.main(["example.com"]), 0)
+        self.assertEqual(out.getvalue(), "piped-secret\n")
+        text = err.getvalue()
+        self.assertIn("no password entry for https://example.com -- manual fallback", text)
+        # The active database is known here, so the prompt names it.
+        self.assertIn("'WorkDB' database", text)
 
     def test_get_prints_manual_fallback_without_yubikey(self):
         store.add(store.connect(), "cli", "v2:abc", "aabb", "WorkDB")
