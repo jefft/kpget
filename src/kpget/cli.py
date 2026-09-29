@@ -167,7 +167,7 @@ def _manual_fetch(url: str, reason: str, rows=(), active_hash: str | None = None
     print("  3. Copy its password, paste it at the prompt, press Enter.", file=sys.stderr)
     try:
         if sys.stdin.isatty():
-            password = getpass.getpass(f"Enter password for {url}: ")
+            password = getpass.getpass(f"Please manually enter the password for KeepassXC entry with URL {url}: ")
         else:
             password = sys.stdin.readline().rstrip("\r\n")
     except (EOFError, KeyboardInterrupt):
